@@ -7,20 +7,28 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty false",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "dev:api": "tsx watch server/index.ts",
+    "start": "node --import tsx server/index.ts",
+    "test": "node --import tsx --test tests/*.test.ts"
   },
   "dependencies": {
+    "@typescript-eslint/parser": "8.71.2",
+    "busboy": "1.6.0",
+    "eslint": "9.39.5",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "react-router-dom": "^7.1.0"
+    "react-router-dom": "^7.1.0",
+    "tsx": "4.23.15"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
+    "@types/busboy": "1.5.4",
+    "@types/node": "22.20.5",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
-    "eslint": "^9.17.0",
     "eslint-plugin-react-hooks": "^5.1.0",
     "globals": "^15.14.0",
     "typescript": "^5.7.2",
