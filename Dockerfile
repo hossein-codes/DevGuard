@@ -20,4 +20,5 @@ COPY --from=build --chown=node:node /app/migrations ./migrations
 USER node
 EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=4s CMD node -e "fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-CMD ["npm", "start"]
+STOPSIGNAL SIGTERM
+CMD ["node", "--import", "tsx", "server/index.ts"]

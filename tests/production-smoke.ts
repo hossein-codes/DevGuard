@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:net'
 import assert from 'node:assert/strict'
+import { Store } from '../server/storage'
 
 const port = await new Promise<number>((resolve, reject) => {
   const probe = createServer()
@@ -21,6 +22,7 @@ const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
   cwd: process.cwd(), env: { ...process.env, PORT: String(port), DATA_DIR: directory }, stdio: ['ignore', 'pipe', 'pipe'],
 })
 let output = ''
+let savedRun: { id: string; owner: string } | undefined
 child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString().slice(0, 300) })
 child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString().slice(0, 300) })
 try {
@@ -49,6 +51,7 @@ try {
   const retrieved = await fetch(`${base}/api/runs/${run.id}`, { headers: { Cookie: authHeaders.Cookie } })
   assert.equal(retrieved.status, 200)
   assert.deepEqual((await retrieved.json()).run, run)
+  savedRun = { id: run.id, owner: account.user.id }
   const invalid = new FormData()
   invalid.append('files', new Blob(['hello']), 'bad.txt')
   const errorResponse = await fetch(`${base}/api/analyze`, { method: 'POST', headers: authHeaders, body: invalid })
@@ -57,6 +60,8 @@ try {
   console.log('PASS production server: SPA, real upload/finding, same-run retrieval, structured validation error')
 } finally {
   child.kill('SIGTERM')
-  await new Promise<void>(resolve => child.once('exit', () => resolve()))
+  const exit = await new Promise<number | null>(resolve => child.once('exit', code => resolve(code)))
+  assert.equal(exit, 0, `Production server did not shut down cleanly: ${output}`)
+  if (savedRun) { const store = new Store(directory); try { assert.equal(store.run(savedRun.owner, savedRun.id)?.status, 'completed') } finally { store.close() } }
   rmSync(directory, { recursive: true, force: true })
 }

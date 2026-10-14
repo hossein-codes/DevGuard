@@ -9,6 +9,7 @@ import type { AnalysisRun, SourceFile } from '../shared/analysis'
 import { decodeFile, InputError, limits, safePath } from './limits'
 import { runWorker } from './runner'
 import { createProtection } from './protection'
+import { createLifecycle, type Lifecycle } from './lifecycle'
 import { version as eslintVersion } from 'eslint/package.json'
 const runIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const securityHeaders = { 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Cross-Origin-Resource-Policy': 'same-origin', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" } as const
@@ -64,14 +65,19 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   catch { throw new InputError('invalid_json', 'Invalid JSON body.') }
 }
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
-export function createApp(analyzer: typeof runWorker = runWorker, store = new Store(process.env.DATA_DIR ?? './data')) {
+export function createApp(analyzer: typeof runWorker = runWorker, store = new Store(process.env.DATA_DIR ?? './data'), lifecycle: Lifecycle = createLifecycle()) {
   const guard = createProtection()
   store.prune()
   store.deleteExpired()
   const server = createServer(async (req, res) => {
     try {
       const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
-      if (pathname === '/api/health' && req.method === 'GET') return json(res, 200, { status: 'ok' })
+      if (pathname === '/api/health' && req.method === 'GET') {
+        if (lifecycle.draining) return json(res, 503, { status: 'unavailable' })
+        try { if (!store.healthy()) return json(res, 503, { status: 'unavailable' }) } catch { return json(res, 503, { status: 'unavailable' }) }
+        return json(res, 200, { status: 'ok' })
+      }
+      if (lifecycle.draining) return json(res, 503, { error: { code: 'shutting_down', message: 'Service is shutting down. Try again later.' } })
       if (pathname.startsWith('/api/')) {
         // Any cookie-authenticated mutation must have a verifiable same-origin request.
         if (!['GET', 'HEAD'].includes(req.method ?? '') && !originValid(req)) return json(res, 403, forbidden)
@@ -139,6 +145,7 @@ export function createApp(analyzer: typeof runWorker = runWorker, store = new St
           const release = guard.acquire()
           if (!release) { res.setHeader('Retry-After', '1'); return json(res, 503, { error: { code: 'busy', message: 'Analyzer is busy. Try again later.' } }) }
           const abort = new AbortController()
+          lifecycle.active.add(abort)
           const onDisconnect = () => { if (!res.writableEnded) abort.abort() }
           res.on('close', onDisconnect); req.on('aborted', onDisconnect)
           let savedRun: AnalysisRun | undefined
@@ -159,7 +166,7 @@ export function createApp(analyzer: typeof runWorker = runWorker, store = new St
             if (!abort.signal.aborted) json(res, 200, { run })
           } finally {
             if (savedRun) try { store.markInterrupted(current.id, savedRun.id) } catch { /* recovered on next startup */ }
-            release(); res.off('close', onDisconnect); req.off('aborted', onDisconnect)
+            lifecycle.active.delete(abort); release(); res.off('close', onDisconnect); req.off('aborted', onDisconnect)
           }
           return
         }

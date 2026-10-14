@@ -11,7 +11,9 @@
     "dev:api": "tsx watch server/index.ts",
     "start": "node --import tsx server/index.ts",
     "test": "node --import tsx --test tests/*.test.ts",
-    "test:production": "node --import tsx tests/production-smoke.ts"
+    "test:production": "node --import tsx tests/production-smoke.ts",
+    "db:backup": "node --import tsx server/backup.ts backup",
+    "db:restore": "node --import tsx server/backup.ts restore"
   },
   "dependencies": {
     "@node-rs/argon2": "2.2.2",

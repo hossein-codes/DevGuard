@@ -27,6 +27,7 @@ export class Store {
     this.db.prepare("UPDATE runs SET status = 'failed', completed_at = ?, errors_json = ? WHERE status IN ('running', 'queued')").run(new Date().toISOString(), JSON.stringify([{ code: 'interrupted', message: 'Analysis was interrupted before completion.' }]))
   }
   close() { this.db.close() }
+  healthy() { return this.db.prepare('SELECT id FROM users LIMIT 1').all() !== undefined }
   createUser(email: string, hash: string): User {
     const user = { id: randomUUID(), email: email.toLowerCase() }
     this.db.transaction(() => {
