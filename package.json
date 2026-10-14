@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "dev:api": "tsx watch server/index.ts",
     "start": "node --import tsx server/index.ts",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:production": "node --import tsx tests/production-smoke.ts"
   },
   "dependencies": {
     "@typescript-eslint/parser": "8.71.2",

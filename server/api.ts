@@ -42,15 +42,16 @@ export function parseUpload(req: IncomingMessage): Promise<SourceFile[]> {
     req.pipe(parser)
   })
 }
-export function createApp() { const server = createServer(async (req, res) => {
+export function createApp(analyzer: typeof runWorker = runWorker) { const server = createServer(async (req, res) => {
   const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
   if (pathname === '/api/health' && req.method === 'GET') return json(res, 200, { status: 'ok' })
-  if (pathname.startsWith('/api/runs/') && req.method === 'GET') { const run = runs.get(pathname.slice('/api/runs/'.length)); return run ? json(res, 200, { run }) : json(res, 404, { error: { code: 'not_found', message: 'Run not found.' } }); server.requestTimeout = 15_000; return server }  if (pathname === '/api/analyze' && req.method === 'POST') {
+  if (pathname.startsWith('/api/runs/') && req.method === 'GET') { const run = runs.get(pathname.slice('/api/runs/'.length)); return run ? json(res, 200, { run }) : json(res, 404, { error: { code: 'not_found', message: 'Run not found.' } }) }
+  if (pathname === '/api/analyze' && req.method === 'POST') {
     let files: SourceFile[]
     try { files = await parseUpload(req) } catch (e) { return fail(res, e instanceof InputError ? e : new InputError('invalid_upload', 'Could not read upload.')) }
     const run: AnalysisRun = { id: randomUUID(), status: 'running', createdAt: new Date().toISOString(), tool: { name: 'ESLint', version: eslintVersion, ruleset: 'devguard-mvp-1' }, fileCount: files.length, findings: [], errors: [] }
     runs.set(run.id, run); if (runs.size > 20) runs.delete(runs.keys().next().value!)
-    try { const result = await runWorker(files, limits.durationMs); run.findings = result.findings; run.errors = result.errors; run.status = result.errors.length ? 'completed_with_errors' : 'completed' }
+    try { const result = await analyzer(files, limits.durationMs); run.findings = result.findings; run.errors = result.errors; run.status = result.errors.length ? 'completed_with_errors' : 'completed' }
     catch (e) { run.status = 'failed'; run.errors = [{ code: e instanceof Error && e.message === 'timeout' ? 'analysis_timeout' : 'analysis_failed', message: e instanceof Error && e.message === 'timeout' ? 'Analysis exceeded the time limit.' : 'Analysis could not complete.' }] }
     run.completedAt = new Date().toISOString()
     return json(res, 200, { run })

@@ -24,3 +24,21 @@ test('worker timeout and failure are bounded', async () => { const files = [{ pa
 test('submitted code and configuration are not executed', async () => { const { data } = await upload([['eslint.config.js', 'throw new Error("would execute if loaded");'], ['src.js', 'throw new Error("would execute if run");\ndebugger;']]); assert.equal(data.run.status, 'completed'); assert.ok(data.run.findings.some((f: { ruleId: string }) => f.ruleId === 'no-debugger')) })
 
 test('uploaded inline ESLint directives cannot disable server rules', async () => { const { data } = await upload([['bypass.js', '/* eslint no-debugger: off */\ndebugger;']]); assert.ok(data.run.findings.some((f: { ruleId: string }) => f.ruleId === 'no-debugger')) })
+
+test('analysis worker failure returns a safe failed run that can be retrieved', async () => {
+  const failing = createApp(async () => { throw new Error('internal secret should not leak') })
+  await new Promise<void>(resolve => failing.listen(0, '127.0.0.1', resolve))
+  try {
+    const origin = `http://127.0.0.1:${(failing.address() as AddressInfo).port}`
+    const form = new FormData()
+    form.append('files', new Blob(['debugger;']), 'failure.js')
+    const response = await fetch(`${origin}/api/analyze`, { method: 'POST', body: form })
+    assert.equal(response.status, 200)
+    const { run } = await response.json()
+    assert.equal(run.status, 'failed')
+    assert.equal(run.errors[0].code, 'analysis_failed')
+    assert.doesNotMatch(JSON.stringify(run), /internal secret/)
+    const retrieved = await fetch(`${origin}/api/runs/${run.id}`)
+    assert.deepEqual((await retrieved.json()).run, run)
+  } finally { await new Promise<void>((resolve, reject) => failing.close(error => error ? reject(error) : resolve())) }
+})
