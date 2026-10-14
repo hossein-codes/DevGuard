@@ -7,7 +7,7 @@ export function runWorker(files: SourceFile[], timeoutMs: number, workerPath = f
     if (signal?.aborted) return reject(new Error('aborted'))
     let child: ReturnType<typeof fork>
     try {
-      child = fork(workerPath, [], { execArgv: ['--import', 'tsx', '--max-old-space-size=128'], stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+      child = fork(workerPath, [], { execArgv: ['--import', 'tsx', '--max-old-space-size=128'], env: { PATH: process.env.PATH ?? '', NODE_ENV: 'production' }, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
     } catch { return reject(new Error('analysis_failed')) }
     let done = false
     const onAbort = () => finish(new Error('aborted'))

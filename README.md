@@ -1,78 +1,54 @@
 # DevGuard
 
-DevGuard Phase 2B adds a bounded, real ESLint-based source-file analysis flow. The original dashboard's four projects, charts and finding pages remain **demonstration data**, not real scan results. Use **Analyze files** in the sidebar for actual tool output. Analysis is not a security certification.
+DevGuard includes a Vite/React dashboard and a real, deliberately narrow ESLint file-analysis API. The four example projects and their dashboard metrics remain **demo fixtures**. Signed-in users' saved projects and runs are separate. Tool findings are not confirmed vulnerabilities.
 
-## Development
+## Architecture
 
-Requires Node.js 22 and npm.
+A **single persistent Node 22 service** serves `dist/` and `/api`. It forks a bounded ESLint child process per analysis and stores accounts, sessions, projects, runs and findings in SQLite on a **durable private disk**. Do not run multiple replicas against a network-mounted SQLite file; per-IP limits and concurrency are per Node process. The native SQLite module needs Node headers if no prebuilt binary is available; the Docker builder points node-gyp to the image's local headers. The database is necessary for identity, ownership and retrieval after restart. No source files are stored; only bounded finding details and evidence for literal `debugger;` are stored. An in-memory cache is not used for runs.
 
-```bash
-npm ci
-npm run dev:api   # terminal 1: API on port 3001
-npm run dev       # terminal 2: Vite on port 5173; proxies /api to 3001
-```
-
-Open `http://localhost:5173/analysis`. Select a `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts` or `.tsx` file (for example, a local file containing `debugger;`), then click **Analyze files**. The page shows the actual ESLint result and links to each finding's detail view. A clean file yields a distinct zero-findings result; invalid uploads and partial parse failures show errors. Demo data on the other pages stays separate.
-
-## API
-
-- `GET /api/health` → `{ "status": "ok" }`
-- `POST /api/analyze` — `multipart/form-data`, one or more parts named `files`. Returns `{ "run": AnalysisRun }` with ID, status, timestamps, tool metadata, file count, findings and safe errors. Validation errors use `{ "error": { "code", "message" } }` with HTTP 400 or 413.
-- `GET /api/runs/:id` → `{ "run": AnalysisRun }` or 404. The browser stores the last run ID locally for refresh. Run IDs are **not** an authorization mechanism.
-
-Example:
+## Local setup
 
 ```bash
-printf 'debugger;\n' > example.js
-curl -F 'files=@example.js' http://localhost:3001/api/analyze
+npm ci  # if native SQLite must compile offline: npm_config_nodedir=/usr/local npm ci
+npm run build
+DATA_DIR=./data PORT=3001 npm start
 ```
 
-Limits are defined in `server/limits.ts`: 10 files, 256 KiB per file, 1 MiB aggregate file content, 1.2 MiB entire multipart request and 10 seconds per analysis worker (15-second HTTP request timeout). Paths are normalized and checked; only valid UTF-8 text is accepted. Files are not written to disk. ESLint 9.39.5 uses a fixed server-owned configuration with `@typescript-eslint/parser` 8.71.2. Rules: `no-eval`, `no-implied-eval`, `no-debugger`, `eqeqeq`, `no-constant-condition`, `no-unreachable`, `no-unsafe-finally`, `no-unused-vars` (JS only), and `no-undef` (JS only). This is a deliberately narrow ruleset; it is not a comprehensive vulnerability scanner. TS checks are syntax-aware linting, not type-aware analysis. Severity is a DevGuard mapping of ESLint diagnostics, not proof of exploitability. Only the literal `debugger;` source line is returned as evidence; other source code is not returned or logged. Suggested remediations are static rule guidance, not AI fixes.
+Open `http://localhost:3001/sign-in`, register using a unique email and password of 12–128 UTF-8 bytes, then navigate to **Analyze files**. Select `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts` or `.tsx` (for example, a file containing `debugger;`) and analyze it. The real finding is saved to your default **My uploads** project; choose another project if desired. Your saved runs appear on `/analysis`; your real projects appear above the separate demo projects on `/projects`. For development, use `npm run dev:api` and `npm run dev` in separate terminals; Vite proxies `/api` to port 3001. Keep `PUBLIC_ORIGIN` unset for local HTTP testing; the server uses the request Host for origin checks.
 
-## Production and limitations
+Run all checks:
 
 ```bash
-npm ci
-npm run lint && npm run typecheck && npm test && npm run build
-PORT=3001 npm start
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npm run test:production
 ```
 
-`npm start` serves both built `dist/` frontend assets and `/api` from one Node process. Set `PORT` as needed and route traffic to that process. The runtime needs its production dependencies (`eslint`, `@typescript-eslint/parser`, `busboy`, `tsx`) and `dist/`. Use a reverse proxy with TLS, request-body limits, connection limits and rate limiting. **Do not expose this unauthenticated MVP to the public or upload confidential code.** Runs are kept in a process-local 20-entry memory cache and disappear on restart; results are visible to anyone possessing a run ID. There is no user isolation, durable storage, GitHub integration, AI, archive upload, or sandbox-grade protection from parser/plugin vulnerabilities. Uploaded code is never executed; the analyzer runs in a capped child process with a deadline and fixed plugins/configuration. Parser and lint rules can still consume resources and may produce false positives or miss real issues. A hardened container, authentication and abuse controls are required before public deployment.
+## Authentication and API
 
-## Phase 2C deployment proof and architecture decision
+Passwords use Argon2id (`@node-rs/argon2`). A 32-byte random session token is stored as a SHA-256 digest in SQLite and sent only in an HttpOnly, SameSite=Lax cookie. In production set `COOKIE_SECURE=1` for the Secure, `__Host-` prefixed cookie. Sessions have a fixed seven-day expiration, no sliding renewal. Logout deletes the session and clears the cookie. `GET /api/session` returns the signed-in user and a per-session CSRF token; state-changing requests require both an exact same-origin `Origin` and `X-CSRF-Token`. Registration/login also require a valid Origin. Do not cache session responses. The CSRF token is not an authentication credential. The browser does not store the session token or a user ID in localStorage.
 
-**Recommended for this proof: one persistent Node.js instance** that serves the built frontend and `/api` on the same origin. It uses the existing `npm start` process and requires no CORS setup or additional infrastructure. `npm run test:production` starts this process on a temporary local port after `npm run build` and checks the SPA route, upload of `debugger;`, the actual ESLint finding, retrieval of the *same* run by ID, and a structured validation error. This is a local production-mode proof, **not a cloud deployment**.
+- `GET /api/health` — `{ "status": "ok" }`, no secrets.
+- `POST /api/auth/register`, `POST /api/auth/login` — JSON `{ "email", "password" }`; response sets the cookie and returns `{ "user", "csrfToken" }`.
+- `GET /api/session`, `POST /api/auth/logout`.
+- `GET /api/projects`, `POST /api/projects` (JSON `{ "name" }`), `GET /api/projects/:id`.
+- `POST /api/analyze` — multipart parts `files` (1–10) and optional `projectId` field; defaults to the user's newest project. Returns `{ "run" }` with tool metadata, status, timestamps, findings and safe errors.
+- `GET /api/runs`, `GET /api/runs/:id`, `DELETE /api/runs/:id`.
 
-If the frontend must live on Vercel, choose **Vercel static Vite frontend + a separate persistent Node analysis service**, with a same-origin external rewrite for `/api/*`. This adds a second deployment and proxy configuration but leaves the API's child-process and temporary memory behavior on the persistent service. Do not use a browser-side absolute API URL: the UI deliberately uses relative `/api` requests. An example `vercel.json` to create **only after an actual API hostname exists** (replace the illustrative hostname with your own, then test multipart forwarding and route refresh on the deployed URLs):
+All endpoints except health and registration/login require a valid server-side session. Each project and run read/write is scoped by the **session's** user ID in SQL; another user's IDs return 404. Finding details are returned only as part of the owned run. Projects are initialized with a default upload project on registration. Run deletion is permanent. A run interrupted by API restart is marked failed on startup. Findings and status changes are committed together in a transaction. Errors are structured JSON without stack traces or filesystem paths.
 
-```json
-{
-  "rewrites": [
-    { "source": "/api/:path*", "destination": "https://YOUR-API-HOST.example/api/:path*" },
-    { "source": "/:path*", "destination": "/index.html" }
-  ]
-}
-```
+## Limits, retention and remaining risks
 
-Configure the Vercel project as a Vite static build: install `npm ci`, build `npm run build`, output directory `dist`. Deploy the Node service separately on a provider that allows a long-running Node 22 process and subprocesses: from the repository root run `npm ci`, `npm run build`, then `npm start`; keep one instance running, point HTTPS traffic to `PORT`, and ensure the process starts in the project root with `dist/`, `server/`, `shared/` and runtime `node_modules/` available. For a separate static frontend deploy, build `dist/` on Vercel and set the external rewrite above; do not publish a Vercel rewrite with a placeholder hostname. Verify health, upload, GET-by-ID, a refresh of `/analysis`, and upload-size rejection via the final Vercel URL. A reverse proxy/body limit and upstream request timeout must permit the 1.2 MiB request and analysis duration. Keep `/api` responses uncached (`Cache-Control: no-store` is set by the API). Direct API-origin access is **not** restricted by these rewrites; restrict it at the hosting/network layer before exposure.
+Uploads are limited to 10 files, 256 KiB each, 1 MiB aggregate content and 1.2 MiB whole request. Request JSON has a 16 KiB limit. Analysis runs up to 10 seconds per child process (128 MiB **V8 heap**, not total memory); request-body timeout is 15 seconds. Two analyses/uploads can be active per process; additional requests get 503. Uploads and auth each have five attempts per socket IP per minute; result reads have 60 per minute (429 and `Retry-After` when exceeded). Only fixed server-owned ESLint rules are used: `no-eval`, `no-implied-eval`, `no-debugger`, `eqeqeq`, `no-constant-condition`, `no-unreachable`, `no-unsafe-finally`, and JS-only `no-unused-vars` and `no-undef`. Uploaded code, config and plugins are never executed or loaded. These checks do not prove code is secure.
 
-Environment variables: `PORT` (optional, defaults to `3001`) is the **only** environment variable this application reads. No credentials, secrets or public `VITE_*` API URL are required for the local proof. In a hosted persistent service, the platform must provide a listening port and start the process in the repo root. Vercel's static site needs an actual API hostname in its deployment-specific rewrite, not an environment variable consumed by application code. Do not paste credentials into `vercel.json`.
+Sessions expire after seven days; runs older than **30 days** are pruned on startup and on analysis submission. Database backups and their retention must be handled by the operator; SQLite WAL sidecar files are part of the database state. Source-code-derived rule messages, paths and evidence can still be sensitive: use trusted users and encrypt disks/backups. No password reset, email verification, MFA, account deletion, account lockout or global distributed throttling exists. Password guessing protection is per socket IP only. The child inherits OS permissions but receives only a minimal PATH/NODE_ENV environment; it has no full CPU, total-memory or network sandbox. Deploy with host/container resource and network restrictions. Never treat passing tests as proof of production security.
 
-Alternative evaluated but **not selected**: Vercel Functions for both frontend and API. Official Vercel docs describe Node.js Function support for Node APIs and list per-function limits (including a 4.5 MB request/response body limit, bundle and execution limits), but the current `server/index.ts` is a long-running listener, not a Vercel handler. Even if child-process spawning works in a particular Function runtime, the worker bundle/entry path and subprocess behavior have **not** been deployed or verified there. More importantly, `GET /api/runs/:id` relies on a process-local map and cannot be relied on across function instances, so this option cannot meet the same-run retrieval requirement without a separate result store. No database is added in this proof.
+## Deployment (prepared, **not deployed**)
 
-References checked for the architectural decision: [Vercel Node.js runtime](https://vercel.com/docs/functions/runtimes/node-js), [Function limits](https://vercel.com/docs/functions/limitations), and [external rewrites](https://vercel.com/docs/routing/rewrites). Limits and behavior should be rechecked for the chosen plan at deployment time.
+Use the provided `Dockerfile` on a provider supporting persistent Node processes, subprocesses and a **single-instance private durable volume** mounted at `/data` writable by UID 1000. Set `PUBLIC_ORIGIN=https://your-real-host.example`, `COOKIE_SECURE=1`, `DATA_DIR=/data`, `PORT=3001`, and `NODE_ENV=production`. These are server-only settings; `.env.example` contains placeholders, not secrets. `PUBLIC_ORIGIN` must match the browser-visible origin exactly. The server fails startup in production if the origin, cookie setting or data directory is missing. Route HTTPS to port 3001 through a trusted TLS terminator, preserve the original Origin and Cookie headers, impose body/connection limits and edge rate limits. Do not trust client-supplied `X-Forwarded-For`; the application uses socket IP. Verify the mounted volume survives restarts, run backups, and ensure database migrations run on startup from `migrations/001_initial.sql` (SQLite user_version=1). Migration failures stop startup; back up the database before upgrades.
 
-**Not public-ready:** no authentication, ownership, rate limiting, worker concurrency cap, persistent storage, or sandbox-grade containment. An ID is not authorization. In-memory results (at most 20 runs per instance) disappear after restart and are not shared between instances; even a single hosted instance can restart. Keep this proof behind access controls and use non-sensitive sample code only.
+If using Vercel for the **static frontend only**, build `dist/` and configure an external same-origin rewrite of `/api/:path*` to this persistent Node origin (see [Vercel external rewrites](https://vercel.com/docs/routing/rewrites)). Use a deployment-specific `vercel.json` with your actual API hostname and SPA fallback. Set `PUBLIC_ORIGIN` to the Vercel frontend origin. The current API is **not** a Vercel Function. Protect the Node origin against bypass at the network/edge layer. A same-origin proxy is necessary for cookie auth; do not expose a browser-side API key or absolute cross-origin API URL. No hosting credentials were available here, so no cloud deployment is claimed.
 
-## Phase 2D security boundaries (MVP, not public-ready)
-
-No account system exists. A static API secret cannot safely authenticate users of a public browser application: exposing it to the frontend would make it public. **No user identity or per-user result ownership is implemented.** Put this proof behind a trusted network-level access gate for private testing; do not expose uploads or results publicly. UUIDs and localStorage are not authentication. `GET /api/runs/:id` remains readable by anyone with that ID while the run is cached.
-
-In-process safeguards, per **single Node process**:
-
-- Upload admission: 5 POST `/api/analyze` attempts per rolling fixed 60-second window per socket IP; result reads: 60 GET `/api/runs/:id` attempts per 60 seconds per socket IP. Rejections use HTTP 429, a JSON `rate_limited` error and `Retry-After`. Counters reset at process restart; at most 4096 client buckets are tracked. No queue or distributed rate limit is present. The server deliberately ignores client-supplied `X-Forwarded-For` because it is forgeable unless a proxy is explicitly trusted: behind a reverse proxy, socket IP may be the proxy address for all users. **Enforce per-client limits at the trusted edge** as well.
-- At most **2 concurrent** upload/analysis requests, including validation/parsing time, per process. Excess requests receive HTTP 503 `busy` (and `Retry-After: 1`). A slot is released after validation errors, successful completion, analysis failure or timeout, and client disconnect; the real worker is killed on disconnect. These are not global limits across replicas.
-- Existing hard limits remain: 10 files, 256 KiB each, 1 MiB aggregate file content, 1.2 MiB multipart request, 10 seconds per worker, and 15-second HTTP request-body timeout. These limits are hard-coded in `server/limits.ts` and `server/api.ts` and can be changed only by reviewed code changes. Invalid run IDs return HTTP 400, missing valid IDs return HTTP 404. API failures return generic JSON; exception details are not returned or logged. No permissive CORS is configured. Same-origin CSP, `nosniff`, frame-denial, referrer and resource-policy headers are set by the Node server. A separate Vercel static deployment must configure its own static-asset security headers.
-- ESLint still uses only server-owned parser/rules and never executes submitted code or uploaded config. Worker uses a hard deadline, SIGKILL and a 128 MiB **V8 heap** flag. That flag does **not** bound total process/native memory or CPU usage. The child inherits the service's OS permissions and environment. A deployment still needs OS/container process, CPU, memory and network restrictions; this is not a sandbox.
-
-Local checks: `npm run lint && npm run typecheck && npm test && npm run build && npm run test:production`. Development requires `npm run dev:api` and `npm run dev` in separate terminals, or run `npm start` after building to serve both on one origin. Do not use sensitive code for these tests.
+Manual deployment verification: visit `/api/health`, register/sign in over HTTPS, upload `debugger;` and confirm a real `no-debugger` finding, fetch `/api/runs/:id` with the same session, restart the API and retrieve it again, verify another account gets 404 for the run, confirm a mutation without CSRF gets 403, and verify no auth cookie is readable from JavaScript. Do not invite public users before independent security review and infrastructure isolation.

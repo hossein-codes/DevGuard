@@ -14,7 +14,9 @@
     "test:production": "node --import tsx tests/production-smoke.ts"
   },
   "dependencies": {
+    "@node-rs/argon2": "2.2.2",
     "@typescript-eslint/parser": "8.71.2",
+    "better-sqlite3": "13.0.3",
     "busboy": "1.6.0",
     "eslint": "9.39.5",
     "lucide-react": "^0.468.0",
@@ -25,6 +27,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
+    "@types/better-sqlite3": "9.6.0",
     "@types/busboy": "1.5.4",
     "@types/node": "22.20.5",
     "@types/react": "^19.0.0",

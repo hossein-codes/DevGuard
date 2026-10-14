@@ -1,17 +1,15 @@
 import { test, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { createApp } from '../server/api'
+import { fixture, register, upload as authorizedUpload, get, type Client } from './helpers'
 import { runWorker } from '../server/runner'
 import { countsFor } from '../shared/analysis'
-import type { AddressInfo } from 'node:net'
-let app: ReturnType<typeof createApp>
-let base: string
-beforeEach(async () => { app = createApp(); await new Promise<void>(resolve => app.listen(0, '127.0.0.1', resolve)); base = `http://127.0.0.1:${(app.address() as AddressInfo).port}` })
-afterEach(() => app.close())
-function upload(files: Array<[string, string | Uint8Array]>) { const form = new FormData(); for (const [name, value] of files) form.append('files', new Blob([value as BlobPart]), name); return fetch(`${base}/api/analyze`, { method: 'POST', body: form }).then(async r => ({ status: r.status, data: await r.json() })) }
+let f: ReturnType<typeof fixture>, base: string, client: Client
+beforeEach(async () => { f = fixture(); base = await f.start(); client = await register(base) })
+afterEach(async () => f.close())
+async function upload(files: Array<[string, string | Uint8Array]>) { const r = await authorizedUpload(client, files); return { status: r.status, data: await r.json() } }
 test('health contains no internals', async () => { const r = await fetch(`${base}/api/health`); assert.deepEqual(await r.json(), { status: 'ok' }) })
-test('real violation and severity counts', async () => { const { data } = await upload([['sample.js', 'debugger;\neval("1")']]); assert.equal(data.run.status, 'completed'); assert.deepEqual(data.run.findings.map((f: { ruleId: string }) => f.ruleId).sort(), ['no-debugger', 'no-eval']); assert.deepEqual(countsFor(data.run.findings), { High: 1, Medium: 0, Low: 1 }); assert.equal(data.run.findings[0].provenance, 'tool_detected'); assert.equal(data.run.findings[0].column, 1); assert.equal((await (await fetch(`${base}/api/runs/${data.run.id}`)).json()).run.id, data.run.id) })
+test('real violation and severity counts', async () => { const { data } = await upload([['sample.js', 'debugger;\neval("1")']]); assert.equal(data.run.status, 'completed'); assert.deepEqual(data.run.findings.map((f: { ruleId: string }) => f.ruleId).sort(), ['no-debugger', 'no-eval']); assert.deepEqual(countsFor(data.run.findings), { High: 1, Medium: 0, Low: 1 }); assert.equal(data.run.findings[0].provenance, 'tool_detected'); assert.equal(data.run.findings[0].column, 1); assert.equal((await (await get(client, `/api/runs/${data.run.id}`)).json()).run.id, data.run.id) })
 test('clean supported TSX file yields zero findings', async () => { const { data } = await upload([['view.tsx', 'export const View = () => <div>Hello</div>;']]); assert.equal(data.run.status, 'completed'); assert.equal(data.run.findings.length, 0) })
 test('unsupported extension', async () => { const r = await upload([['a.txt', 'hello']]); assert.equal(r.status, 400); assert.equal(r.data.error.code, 'unsupported_file') })
 test('empty upload and empty file', async () => { assert.equal((await upload([])).data.error.code, 'no_files'); assert.equal((await upload([['a.js', '']])).data.error.code, 'empty_file') })
@@ -26,19 +24,19 @@ test('submitted code and configuration are not executed', async () => { const { 
 test('uploaded inline ESLint directives cannot disable server rules', async () => { const { data } = await upload([['bypass.js', '/* eslint no-debugger: off */\ndebugger;']]); assert.ok(data.run.findings.some((f: { ruleId: string }) => f.ruleId === 'no-debugger')) })
 
 test('analysis worker failure returns a safe failed run that can be retrieved', async () => {
-  const failing = createApp(async () => { throw new Error('internal secret should not leak') })
-  await new Promise<void>(resolve => failing.listen(0, '127.0.0.1', resolve))
+  const failingFixture = fixture(async () => { throw new Error('internal secret should not leak') })
+  const origin = await failingFixture.start()
+  const failureClient = await register(origin, 'failure@example.test')
   try {
-    const origin = `http://127.0.0.1:${(failing.address() as AddressInfo).port}`
     const form = new FormData()
     form.append('files', new Blob(['debugger;']), 'failure.js')
-    const response = await fetch(`${origin}/api/analyze`, { method: 'POST', body: form })
+    const response = await fetch(`${origin}/api/analyze`, { method: 'POST', headers: { Cookie: failureClient.cookie, Origin: origin, 'X-CSRF-Token': failureClient.csrf }, body: form })
     assert.equal(response.status, 200)
     const { run } = await response.json()
     assert.equal(run.status, 'failed')
     assert.equal(run.errors[0].code, 'analysis_failed')
     assert.doesNotMatch(JSON.stringify(run), /internal secret/)
-    const retrieved = await fetch(`${origin}/api/runs/${run.id}`)
+    const retrieved = await get(failureClient, `/api/runs/${run.id}`)
     assert.deepEqual((await retrieved.json()).run, run)
-  } finally { await new Promise<void>((resolve, reject) => failing.close(error => error ? reject(error) : resolve())) }
+  } finally { await failingFixture.close() }
 })

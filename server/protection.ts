@@ -5,7 +5,7 @@ type Entry = { count: number; resetAt: number }
 export function createProtection(now = Date.now) {
   const buckets = new Map<string, Entry>()
   let active = 0
-  function rate(req: IncomingMessage, kind: 'upload' | 'read'): { allowed: boolean; retryAfter: number } {
+  function rate(req: IncomingMessage, kind: 'upload' | 'read' | 'auth'): { allowed: boolean; retryAfter: number } {
     // Do not trust X-Forwarded-For from arbitrary clients. A reverse proxy must enforce
     // its own per-client policy; this address may be the proxy for all requests.
     const key = `${kind}:${req.socket.remoteAddress ?? 'unknown'}`
@@ -19,7 +19,7 @@ export function createProtection(now = Date.now) {
       buckets.set(key, { count: 1, resetAt: time + protection.windowMs })
       return { allowed: true, retryAfter: 0 }
     }
-    if (existing.count >= (kind === 'upload' ? protection.uploadPerMinute : protection.readsPerMinute)) return { allowed: false, retryAfter: Math.max(1, Math.ceil((existing.resetAt - time) / 1000)) }
+    if (existing.count >= (kind === 'read' ? protection.readsPerMinute : protection.uploadPerMinute)) return { allowed: false, retryAfter: Math.max(1, Math.ceil((existing.resetAt - time) / 1000)) }
     existing.count++
     return { allowed: true, retryAfter: 0 }
   }
