@@ -1,14 +1,14 @@
-import { test, before, after } from 'node:test'
+import { test, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { createApp } from '../server/api'
 import { runWorker } from '../server/runner'
 import { countsFor } from '../shared/analysis'
 import type { AddressInfo } from 'node:net'
-const app = createApp()
+let app: ReturnType<typeof createApp>
 let base: string
-before(async () => { await new Promise<void>(resolve => app.listen(0, '127.0.0.1', resolve)); base = `http://127.0.0.1:${(app.address() as AddressInfo).port}` })
-after(() => app.close())
+beforeEach(async () => { app = createApp(); await new Promise<void>(resolve => app.listen(0, '127.0.0.1', resolve)); base = `http://127.0.0.1:${(app.address() as AddressInfo).port}` })
+afterEach(() => app.close())
 function upload(files: Array<[string, string | Uint8Array]>) { const form = new FormData(); for (const [name, value] of files) form.append('files', new Blob([value as BlobPart]), name); return fetch(`${base}/api/analyze`, { method: 'POST', body: form }).then(async r => ({ status: r.status, data: await r.json() })) }
 test('health contains no internals', async () => { const r = await fetch(`${base}/api/health`); assert.deepEqual(await r.json(), { status: 'ok' }) })
 test('real violation and severity counts', async () => { const { data } = await upload([['sample.js', 'debugger;\neval("1")']]); assert.equal(data.run.status, 'completed'); assert.deepEqual(data.run.findings.map((f: { ruleId: string }) => f.ruleId).sort(), ['no-debugger', 'no-eval']); assert.deepEqual(countsFor(data.run.findings), { High: 1, Medium: 0, Low: 1 }); assert.equal(data.run.findings[0].provenance, 'tool_detected'); assert.equal(data.run.findings[0].column, 1); assert.equal((await (await fetch(`${base}/api/runs/${data.run.id}`)).json()).run.id, data.run.id) })
